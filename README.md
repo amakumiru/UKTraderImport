@@ -69,12 +69,8 @@ Cn8Code,Cn8LongDescription,EU / NON EU,Continent,Country,PortName,Value (£),Net
 01012100,Pure-bred breeding horses,EU,European Union,France,Not Collected,4579640.0,13166.0,54.0,EU Imports,2015,December
 ```
 
-## Лицензия
-
-Этот проект лицензирован под лицензией MIT. Подробности см. в файле LICENSE.
-
 ## Контактная информация
 
-Если у вас есть вопросы или предложения, пожалуйста, свяжитесь с нами по адресу: [amakumiru@yandex.ru]
+Если у вас есть вопросы или предложения, пожалуйста, свяжитесь со мной по адресу: [amakumiru@yandex.ru]
 ```
 
