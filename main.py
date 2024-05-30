@@ -75,8 +75,7 @@ def main():
     base_url = "https://api.uktradeinfo.com/OTS"
     params = {
         "$filter": "MonthId eq 201512 and CommodityId gt 93 and (FlowTypeId eq 1 or FlowTypeId  eq 3)",
-        "$expand": "Commodity",
-        "$top": 20
+        "$expand": "Commodity"
     }
 
     response = send_get_request(base_url, params)
