@@ -16,11 +16,8 @@ async def send_get_request(session, url, params=None, retries=3):
                 await asyncio.sleep(60 if e.status == 429 else 1)
             else:
                 print(f"Ошибка: {e.status}, message='{e.message}', url={e.request_info.url} при запросе к {url}")
-                return None
         except aiohttp.ClientError as e:
             print(f"Ошибка: {e} при запросе к {url}")
-            return None
-    return None
 
 async def fetch_all_data(ports, countries, flowtypes):
     base_url = "https://api.uktradeinfo.com/OTS"
