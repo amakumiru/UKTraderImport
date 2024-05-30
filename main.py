@@ -1,61 +1,119 @@
-import requests
+import aiohttp
+import asyncio
 import csv
 import calendar
 
-def send_get_request(url, params=None):
-    """Отправляет GET-запрос и обрабатывает ошибки."""
-    try:
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        return response.json()
-    except requests.RequestException as e:
-        print(f"Ошибка: {e} при запросе к {url}")
-        return None
+# Вспомогательная функция для отправки GET-запросов и обработки ошибок
+async def send_get_request(session, url, params=None, retries=3):
+    for attempt in range(retries):
+        try:
+            async with session.get(url, params=params) as response:
+                response.raise_for_status()
+                return await response.json()
+        except aiohttp.ClientResponseError as e:
+            if e.status in {403, 429}:  # Forbidden or Too Many Requests
+                print(f"Ошибка: {e.status}, message='{e.message}', url={e.request_info.url} при запросе к {url}")
+                await asyncio.sleep(60 if e.status == 429 else 1)
+            else:
+                print(f"Ошибка: {e.status}, message='{e.message}', url={e.request_info.url} при запросе к {url}")
+                return None
+        except aiohttp.ClientError as e:
+            print(f"Ошибка: {e} при запросе к {url}")
+            return None
+    return None
 
-def get_data(url, filters=None):
-    """Получает данные с указанного URL с применением фильтров."""
-    response = send_get_request(url, filters)
-    return response['value'][0] if response and 'value' in response else None
+async def fetch_all_data(ports, countries, flowtypes):
+    base_url = "https://api.uktradeinfo.com/OTS"
+    params = {
+        "$filter": "MonthId eq 201512 and CommodityId gt 93 and (FlowTypeId eq 1 or FlowTypeId eq 3)",
+        "$expand": "Commodity"
+    }
+    results = []
 
-def get_country_info(country_id):
-    """Получает информацию о стране по ее ID."""
-    url = f"https://api.uktradeinfo.com/Country?$select=CountryName,Area1a&$filter=CountryId eq {country_id}"
-    return get_data(url)
+    async with aiohttp.ClientSession() as session:
+        next_link = base_url + "?" + "&".join([f"{k}={v}" for k, v in params.items()])
+        while next_link:
+            response = await send_get_request(session, next_link)
+            if response and 'value' in response:
+                tasks = [process_import_data(session, import_data, ports, countries, flowtypes) for import_data in response['value']]
+                page_results = await asyncio.gather(*tasks)
+                results.extend([result for result in page_results if result])
+                next_link = response.get('@odata.nextLink')
+                if next_link:
+                    await asyncio.sleep(1)  # Задержка для избежания лимитов запросов
+            else:
+                next_link = None
 
-def get_flowtype_description(flowtype_id):
-    """Получает описание типа потока по его ID."""
-    url = f"https://api.uktradeinfo.com/FlowType?$select=FlowTypeDescription&$filter=FlowTypeId eq {flowtype_id}"
-    data = get_data(url)
-    return data['FlowTypeDescription'].strip() if data else 'Неизвестный тип потока'
+    return results
 
-def get_portname(port_id):
-    """Получает название порта по его ID."""
-    url = f"https://api.uktradeinfo.com/Port?$select=PortName&$filter=PortId eq {port_id}"
-    data = get_data(url)
-    return data['PortName'] if data else 'Ошибка: Не удалось получить название порта'
+async def fetch_lookup_data():
+    async with aiohttp.ClientSession() as session:
+        # Словари для хранения данных
+        ports = {}
+        countries = {}
+        flowtypes = {}
 
-def process_import_data(import_data):
-    """Обрабатывает данные импорта и возвращает результат в виде словаря."""
-    commodity_id = import_data.get('CommodityId')
-    if not commodity_id or not isinstance(import_data['Commodity'], dict):
-        return None
+        # Получение данных по портам
+        next_link = "https://api.uktradeinfo.com/Port?$select=PortId,PortName"
+        while next_link:
+            response = await send_get_request(session, next_link)
+            if response and 'value' in response:
+                for item in response['value']:
+                    ports[item['PortId']] = item['PortName']
+                next_link = response.get('@odata.nextLink')
+                if next_link:
+                    await asyncio.sleep(1)
+            else:
+                next_link = None
 
+        # Получение данных по странам
+        next_link = "https://api.uktradeinfo.com/Country?$select=CountryId,CountryName,Area1a"
+        while next_link:
+            response = await send_get_request(session, next_link)
+            if response and 'value' in response:
+                for item in response['value']:
+                    countries[item['CountryId']] = {
+                        "CountryName": item['CountryName'],
+                        "Continent": item['Area1a']
+                    }
+                next_link = response.get('@odata.nextLink')
+                if next_link:
+                    await asyncio.sleep(1)
+            else:
+                next_link = None
+
+        # Получение данных по типам потоков
+        next_link = "https://api.uktradeinfo.com/FlowType?$select=FlowTypeId,FlowTypeDescription"
+        while next_link:
+            response = await send_get_request(session, next_link)
+            if response and 'value' in response:
+                for item in response['value']:
+                    flowtypes[item['FlowTypeId']] = item['FlowTypeDescription'].strip()
+                next_link = response.get('@odata.nextLink')
+                if next_link:
+                    await asyncio.sleep(1)
+            else:
+                next_link = None
+
+    return ports, countries, flowtypes
+
+async def process_import_data(session, import_data, ports, countries, flowtypes):
     if float(import_data['Value']) > 0.0:
         Cn8Code = import_data['Commodity']['Cn8Code']
         Cn8LongDescription = import_data['Commodity']['Cn8LongDescription']
-        country_data = get_country_info(import_data['CountryId'])
-        CountryName = country_data['CountryName'] if country_data else 'N/A'
-        Continent = country_data['Area1a'] if country_data else 'N/A'
+        country_data = countries.get(import_data['CountryId'], {})
+        CountryName = country_data.get('CountryName', 'N/A')
+        Continent = country_data.get('Continent', 'N/A')
         EU = 'EU' if Continent == 'European Union' else 'NON EU'
         Value = import_data.get('Value', 'N/A')
         NetMass = import_data.get('NetMass', 'N/A')
         SuppUnit = import_data.get('SuppUnit', 'N/A')
-        FlowType = get_flowtype_description(import_data['FlowTypeId'])
-        PortName = get_portname(import_data['PortId'])
+        FlowType = flowtypes.get(import_data['FlowTypeId'], 'Неизвестный тип потока')
+        PortName = ports.get(import_data['PortId'], 'Ошибка: Не удалось получить название порта')
         Year = int(str(import_data['MonthId'])[:4])
         Month = calendar.month_name[int(str(import_data['MonthId'])[4:])]
 
-        return {
+        result = {
             "Cn8Code": Cn8Code,
             "Cn8LongDescription": Cn8LongDescription,
             "EU / NON EU": EU,
@@ -69,37 +127,29 @@ def process_import_data(import_data):
             "Year": Year,
             "Month": Month
         }
-    return None
+        return result
 
-def main():
-    base_url = "https://api.uktradeinfo.com/OTS"
-    params = {
-        "$filter": "MonthId eq 201512 and CommodityId gt 93 and (FlowTypeId eq 1 or FlowTypeId  eq 3)",
-        "$expand": "Commodity"
-    }
+async def main():
+    ports, countries, flowtypes = await fetch_lookup_data()
+    results = await fetch_all_data(ports, countries, flowtypes)
 
-    response = send_get_request(base_url, params)
-    if response and 'value' in response:
-        results = []
-        for import_data in response['value']:
-            result = process_import_data(import_data)
-            if result:
-                results.append(result)
+    # Вывод данных
+    for item in results:
+        print(item)
 
-        # Сохранение данных в CSV
-        csv_columns = ["Cn8Code", "Cn8LongDescription", "EU / NON EU", "Continent", "Country", "PortName", "Value (£)", "Net Mass (Kg)", "Supp Unit", "Flow Type", "Year", "Month"]
-        csv_file = "import_data.csv"
+    # Сохранение данных в CSV
+    csv_columns = ["Cn8Code", "Cn8LongDescription", "EU / NON EU", "Continent", "Country", "PortName", "Value (£)", "Net Mass (Kg)", "Supp Unit", "Flow Type", "Year", "Month"]
+    csv_file = "import_data.csv"
 
-        try:
-            with open(csv_file, 'w', newline='', encoding='UTF-8') as csvfile:
-                writer = csv.DictWriter(csvfile, fieldnames=csv_columns)
-                writer.writeheader()
-                for item in results:
-                    writer.writerow(item)
-        except IOError as e:
-            print(f"I/O error: {e}")
-    else:
-        print("Ошибка: Не удалось получить данные.")
+    try:
+        with open(csv_file, 'w', newline='', encoding='UTF-8') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=csv_columns)
+            writer.writeheader()
+            for item in results:
+                writer.writerow(item)
+    except IOError as e:
+        print(f"I/O error: {e}")
 
+# Запуск основного асинхронного цикла
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
